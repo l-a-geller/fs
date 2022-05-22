@@ -21,9 +21,16 @@ module sr_cpu
 );
     //control wires
     wire        aluZero;
-    wire        pcSrc;
+    wire        aluReady;
+    wire        pcEnable;
+    wire        pcSelect;
+    wire        irEnable;
     wire        regWrite;
     wire        aluSrc;
+    wire        aluSrcAEnable;
+    wire        aluSrcBEnable;
+    wire        aluRst;
+    wire        aluStart;
     wire        wdSrc;
     wire  [2:0] aluControl;
 
@@ -42,12 +49,22 @@ module sr_cpu
     wire [31:0] pc;
     wire [31:0] pcBranch = pc + immB;
     wire [31:0] pcPlus4  = pc + 4;
-    wire [31:0] pcNext   = pcSrc ? pcBranch : pcPlus4;
+    wire [31:0] pcNext   = pcEnable ? (pcSelect ? pcBranch : pcPlus4) : pc;
     sm_register r_pc(clk ,rst_n, pcNext, pc);
 
     //program memory access
     assign imAddr = pc >> 2;
     wire [31:0] instr = imData;
+    //wire [31:0] instr = 0;
+
+    //reg [31:0] instructionReg;
+
+    //always @ (posedge clk) begin
+        //if (PCEnable) programCounter <= nextPC;
+        //if (irEnable) instr = imData;
+        //if (IR2Enable) i n s t r u c ti o n R e g 2 <= dataOut;
+    //end
+
 
     //instruction decode
     sr_decode id (
@@ -82,34 +99,45 @@ module sr_cpu
         .we3        ( regWrite     )
     );
 
-    //debug register access
     assign regData = (regAddr != 0) ? rd0 : pc;
 
-    //alu
     wire [31:0] srcB = aluSrc ? immI : rd2;
     wire [31:0] aluResult;
 
     sr_alu alu (
-        .srcA       ( rd1          ),
-        .srcB       ( srcB         ),
-        .oper       ( aluControl   ),
-        .zero       ( aluZero      ),
-        .result     ( aluResult    ) 
+        .clk        ( clk           ),
+        .rst        ( aluRst        ),
+        .start      ( aluStart      ),
+        .srcAEnable ( aluSrcAEnable ),
+        .srcBEnable ( aluSrcBEnable ),
+        .srcA       ( rd1           ),
+        .srcB       ( srcB          ),
+        .oper       ( aluControl    ),
+        .zero       ( aluZero       ),
+        .ready      ( aluReady      ),
+        .result     ( aluResult     ) 
     );
 
     assign wd3 = wdSrc ? immU : aluResult;
 
-    //control
     sr_control sm_control (
         .cmdOp      ( cmdOp        ),
         .cmdF3      ( cmdF3        ),
         .cmdF7      ( cmdF7        ),
+        .clk        ( clk          ),
+        .aluRst     ( aluRst       ),
+        .aluStart   ( aluStart     ),
+        .aluSrcAEnable ( aluSrcAEnable ),
+        .aluSrcBEnable ( aluSrcBEnable ),
         .aluZero    ( aluZero      ),
-        .pcSrc      ( pcSrc        ),
+        .aluReady   ( aluReady     ),
+        .pcEnable   ( pcEnable     ),
+        .pcSelect   ( pcSelect     ),
+        .irEnable   ( irEnable     ),
         .regWrite   ( regWrite     ),
         .aluSrc     ( aluSrc       ),
         .wdSrc      ( wdSrc        ),
-        .aluControl ( aluControl   ) 
+        .aluControl ( aluControl   )
     );
 
 endmodule
@@ -159,63 +187,195 @@ endmodule
 
 module sr_control
 (
-    input     [ 6:0] cmdOp,
-    input     [ 2:0] cmdF3,
-    input     [ 6:0] cmdF7,
+    input      [6:0] cmdOp,
+    input      [2:0] cmdF3,
+    input      [6:0] cmdF7,
+    input            clk,
+    output           aluRst,
+    output           aluStart,
+    input            aluSrcAEnable,
+    input            aluSrcBEnable,
     input            aluZero,
-    output           pcSrc, 
-    output reg       regWrite, 
+    input            aluReady,
+    output           pcEnable,
+    output           pcSelect,
+    output           irEnable,
+    output reg       regWrite,
     output reg       aluSrc,
     output reg       wdSrc,
     output reg [2:0] aluControl
 );
-    reg          branch;
-    reg          condZero;
-    assign pcSrc = branch & (aluZero == condZero);
+
+    reg pcEnableReg;
+    reg pcSelectReg;
+    reg irEnableReg;
+    reg aluRstReg;
+    reg aluStartReg;
+    reg aluSrcAEnableReg;
+    reg aluSrcBEnableReg;
+    reg              branch;
+    reg              condZero;
+    
+    assign pcEnable = pcEnableReg;
+    assign pcSelect = pcSelectReg;
+    assign irEnable = irEnableReg;
+    assign aluSrcAEnable = aluSrcAEnableReg;
+    assign aluSrcBEnable = aluSrcBEnableReg;
+    assign aluRst = aluRstReg;
+    assign aluStart = aluStartReg;
+
+  
+    parameter loadInstruction = 0;
+    parameter decodeInstruction = 1;
+    parameter loadAlu = 2;
+    parameter compute = 3;
+    parameter jump = 4;
+    parameter halt = 5;
+
+    reg [3:0] state = loadInstruction;
+    reg [3:0] nextstate;
+
+    always @ (posedge clk) state = nextstate;
 
     always @ (*) begin
-        branch      = 1'b0;
-        condZero    = 1'b0;
-        regWrite    = 1'b0;
-        aluSrc      = 1'b0;
-        wdSrc       = 1'b0;
-        aluControl  = `ALU_ADD;
+        case (state)
+            loadInstruction: begin
+                aluRstReg = 1;
+                aluStartReg = 0;
+                pcEnableReg = 1;
 
-        casez( {cmdF7, cmdF3, cmdOp} )
-            { `RVF7_ADD,  `RVF3_ADD,  `RVOP_ADD  } : begin regWrite = 1'b1; aluControl = `ALU_ADD;  end
-            { `RVF7_OR,   `RVF3_OR,   `RVOP_OR   } : begin regWrite = 1'b1; aluControl = `ALU_OR;   end
-            { `RVF7_SRL,  `RVF3_SRL,  `RVOP_SRL  } : begin regWrite = 1'b1; aluControl = `ALU_SRL;  end
-            { `RVF7_SLTU, `RVF3_SLTU, `RVOP_SLTU } : begin regWrite = 1'b1; aluControl = `ALU_SLTU; end
-            { `RVF7_SUB,  `RVF3_SUB,  `RVOP_SUB  } : begin regWrite = 1'b1; aluControl = `ALU_SUB;  end
+                aluSrcAEnableReg = 0;
+                aluSrcBEnableReg = 0;
+                irEnableReg = 1;
 
-            { `RVF7_ANY,  `RVF3_ADDI, `RVOP_ADDI } : begin regWrite = 1'b1; aluSrc = 1'b1; aluControl = `ALU_ADD; end
-            { `RVF7_ANY,  `RVF3_ANY,  `RVOP_LUI  } : begin regWrite = 1'b1; wdSrc  = 1'b1; end
+                nextstate = decodeInstruction;
+            end
 
-            { `RVF7_ANY,  `RVF3_BEQ,  `RVOP_BEQ  } : begin branch = 1'b1; condZero = 1'b1; aluControl = `ALU_SUB; end
-            { `RVF7_ANY,  `RVF3_BNE,  `RVOP_BNE  } : begin branch = 1'b1; aluControl = `ALU_SUB; end
+            decodeInstruction: begin
+
+                aluRstReg = 0;
+                aluStartReg = 1;
+                
+                irEnableReg = 0;
+                pcEnableReg = 0;
+
+                aluSrcAEnableReg = 0;
+                aluSrcBEnableReg = 0;
+
+                branch = 1'b0;
+                aluSrc = 1'b0;
+
+                branch      = 1'b0;
+                condZero    = 1'b0;
+                regWrite    = 1'b0;
+              
+                wdSrc       = 1'b0;
+                aluControl  = `ALU_ADD;
+
+                casez( {cmdF7, cmdF3, cmdOp} )
+                    { `RVF7_ADD,  `RVF3_ADD,  `RVOP_ADD  } : begin aluControl = `ALU_ADD; end // begin regWrite = 1'b1; aluControl = `ALU_ADD;  end
+                    { `RVF7_OR,   `RVF3_OR,   `RVOP_OR   } : begin aluControl = `ALU_OR;   end
+                    //{ `RVF7_SRL,  `RVF3_SRL,  `RVOP_SRL  } : begin aluSrc = 1'b1; aluControl = `ALU_OR;  end
+                    //{ `RVF7_SLTU, `RVF3_SLTU, `RVOP_SLTU } : begin regWrite = 1'b1; aluControl = `ALU_SLTU; end
+                    //{ `RVF7_SUB,  `RVF3_SUB,  `RVOP_SUB  } : begin regWrite = 1'b1; aluControl = `ALU_SUB;  end
+
+                    { `RVF7_ANY,  `RVF3_ADDI, `RVOP_ADDI } : begin aluSrc = 1'b1; aluControl = `ALU_ADD; end // begin regWrite = 1'b1; aluSrc = 1'b1; aluControl = `ALU_ADD; end
+                    { `RVF7_ANY,  `RVF3_ANY,  `RVOP_LUI  } : begin wdSrc  = 1'b1; end
+
+                    { `RVF7_ANY,  `RVF3_BEQ,  `RVOP_BEQ  } : begin  branch = 1'b1; condZero = 1'b1; aluControl = `ALU_SUB; end // begin branch = 1'b1; condZero = 1'b1; aluControl = `ALU_SUB; end
+                    //{ `RVF7_ANY,  `RVF3_BNE,  `RVOP_BNE  } : begin branch = 1'b1; aluControl = `ALU_SUB; end
+
+                    { `RVF7_ANY,  `RVF3_BLTU, `RVOP_BLTU } : begin branch = 1'b1; condZero = 0'b0; aluControl = `ALU_SLTU; end
+                    
+                    { `RVF7_ANY,  `RVF3_ARI, `RVOP_ARI } : begin aluControl = `ALU_ARI; end
+                endcase
+
+                nextstate = loadAlu;
+
+            end
+
+            loadAlu: begin // Load registers to alu
+                pcEnableReg = 0;
+                pcSelectReg = 0;
+                irEnableReg = 0;
+                aluSrcAEnableReg = 1;
+                aluSrcBEnableReg = 1;
+                nextstate = compute;
+            end
+
+            compute: begin // Compute opeartion
+
+                pcEnableReg = 0;
+                pcSelectReg = 0;
+                irEnableReg = 0;
+
+                aluSrcAEnableReg = 0;
+                aluSrcBEnableReg = 0;
+
+                regWrite = 1'b1;
+                nextstate = aluReady ? (branch ? jump : loadInstruction) : compute;
+            end
+
+            jump: begin // jump
+
+                pcSelectReg = branch & (aluZero == condZero);
+
+                irEnableReg = 0;
+                pcEnableReg = 0;
+                nextstate = loadInstruction;
+            end
+
         endcase
     end
 endmodule
 
 module sr_alu
 (
+    input         clk,
+    input         rst,
+    input         start,
+    input         srcAEnable,
+    input         srcBEnable,
     input  [31:0] srcA,
     input  [31:0] srcB,
     input  [ 2:0] oper,
     output        zero,
+    output        ready,
     output reg [31:0] result
 );
+
+    reg [31:0] a;
+    reg [31:0] b;
+
+    reg [31:0] root_resReg;
+    wire [31:0] root_res;
+    wire busy;
+
+    main main(
+        .rst_i(rst),
+        .clk_i(clk),
+        .a_in(srcA[7:0]),
+        .b_in(srcB[7:0]),
+        .start_i(start),
+        .busy_o(busy),
+        .y_bo(root_res[15:0])
+    );
+
     always @ (*) begin
+        if (srcAEnable) a = srcA;
+        if (srcBEnable) b = srcB;
         case (oper)
-            default   : result = srcA + srcB;
-            `ALU_ADD  : result = srcA + srcB;
-            `ALU_OR   : result = srcA | srcB;
-            `ALU_SRL  : result = srcA >> srcB [4:0];
+            default   : result = a + b;
+            `ALU_ADD  : result = a + b;
+            `ALU_OR   : result = {16'h0000, root_res[15:0]};
+            //`ALU_SRL  : result = srcA >> srcB [4:0];
             `ALU_SLTU : result = (srcA < srcB) ? 1 : 0;
-            `ALU_SUB : result = srcA - srcB;
+            `ALU_SUB  : result = a - b;
+            //`ALU_ARI  : result = root_res;
         endcase
     end
 
+    assign ready  = (oper == `ALU_OR) ? ~busy : 1;
     assign zero   = (result == 0);
 endmodule
 

@@ -13,7 +13,7 @@
 `include "sr_cpu.vh"
 
 `ifndef SIMULATION_CYCLES
-    `define SIMULATION_CYCLES 120
+    `define SIMULATION_CYCLES 500
 `endif
 
 module sm_testbench;
@@ -101,6 +101,8 @@ module sm_testbench;
 
             { `RVF7_ANY,  `RVF3_BEQ,  `RVOP_BEQ  } : $write ("beq   $%1d, $%1d, 0x%8h (%1d)", rs1, rs2, immB, immB);
             { `RVF7_ANY,  `RVF3_BNE,  `RVOP_BNE  } : $write ("bne   $%1d, $%1d, 0x%8h (%1d)", rs1, rs2, immB, immB);
+
+            { `RVF7_ANY,  `RVF3_BLTU, `RVOP_BLTU } : $write ("bltu  $%1d, $%1d, 0x%8h (%1d)", rs1, rs2, immB, immB);
         endcase
     end
     endtask
@@ -111,8 +113,8 @@ module sm_testbench;
 
     always @ (posedge clk)
     begin
-        $write ("%5d  pc = %2h instr = %h   a0 = %1d", 
-                  cycle, sm_top.sm_cpu.pc, sm_top.sm_cpu.instr, sm_top.sm_cpu.rf.rf[10]);
+        $write ("%5d  pc = %2h instr = %h   a0 = %1x a1 = %1x a2 = %1x", 
+                  cycle, sm_top.sm_cpu.pc, sm_top.sm_cpu.instr, sm_top.sm_cpu.rf.rf[10], sm_top.sm_cpu.rf.rf[11], sm_top.sm_cpu.rf.rf[12]);
 
         disasmInstr();
 
